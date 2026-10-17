@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/kardianos/service"
 	"github.com/ochinchina/supervisord/logger"
@@ -23,10 +24,11 @@ var serviceCommand ServiceCommand
 type program struct {
 	supervisor atomic.Pointer[Supervisor]
 	service    service.Service
+	done       chan struct{}
 }
 
 func NewProgram() *program {
-	return &program{}
+	return &program{done: make(chan struct{})}
 }
 
 // Start supervised service
@@ -36,6 +38,9 @@ func (p *program) Start(s service.Service) error {
 	if err != nil {
 		return err
 	}
+	if p.done == nil {
+		p.done = make(chan struct{})
+	}
 	p.supervisor.Store(supervisor)
 	p.service = s
 	go p.run()
@@ -44,6 +49,7 @@ func (p *program) Start(s service.Service) error {
 
 func (p *program) run() {
 	p.supervisor.Load().WaitForExit()
+	close(p.done)
 	if p.service != nil && !service.Interactive() {
 		_ = p.service.Stop()
 	}
@@ -52,7 +58,19 @@ func (p *program) run() {
 func (p *program) Stop(s service.Service) error {
 	if supervisor := p.supervisor.Load(); supervisor != nil {
 		reply := struct{ Ret bool }{}
-		return supervisor.Shutdown(nil, nil, &reply)
+		if err := supervisor.Shutdown(nil, nil, &reply); err != nil {
+			return err
+		}
+		// The service library returns from Run once Stop returns. Keep the
+		// process alive until its children, listeners and logs have drained.
+		timer := time.NewTimer(90 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-p.done:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("service shutdown exceeded 90 seconds")
+		}
 	}
 	return nil
 }
@@ -77,7 +95,7 @@ func (sc ServiceCommand) Execute(args []string) error {
 		Description: "Supervisord service in golang",
 		Arguments:   serviceArgs,
 	}
-	prg := &program{}
+	prg := NewProgram()
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		log.Error("service init failed", err)
@@ -149,7 +167,7 @@ func (sc *ServiceCommand) RunServer() error {
 		Description: "Supervisord service in golang",
 		Arguments:   serviceArgs,
 	}
-	prg := &program{}
+	prg := NewProgram()
 	s, err := service.New(prg, svcConfig)
 	if err != nil {
 		log.Error("service init failed", err)
