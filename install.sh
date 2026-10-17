@@ -3,7 +3,7 @@
 set -eu
 umask 077
 
-repo=${SUPERVISORD_REPO:-ochinchina/supervisord}
+repo=${SUPERVISORD_REPO:-domain1286666/supervisord}
 version=${SUPERVISORD_VERSION:-latest}
 port=8002
 bind=0.0.0.0
@@ -17,7 +17,7 @@ usage() {
   cat <<'USAGE'
 Usage: sudo sh install.sh [options]
   --binary PATH     Install a local binary instead of downloading a release
-  --repo OWNER/REPO Release repository (default ochinchina/supervisord)
+  --repo OWNER/REPO Release repository (default domain1286666/supervisord)
   --version TAG     Release tag (default latest)
   --port PORT       Port for a newly created configuration (default 8002)
   --bind ADDRESS    Bind address for a newly created configuration (default 0.0.0.0)
@@ -41,6 +41,7 @@ done
 [ "$(uname -s)" = Linux ] || die 'This installer supports Linux with systemd.'
 [ "$(id -u)" -eq 0 ] || die 'Run this installer with sudo or as root.'
 command -v systemctl >/dev/null 2>&1 || die 'systemd is required; for containers run supervisord -c /path/to/supervisord.conf directly.'
+[ -d /run/systemd/system ] || die 'systemd must be running; for containers run supervisord directly.'
 case "$port" in ''|*[!0-9]*) die 'Port must be numeric';; esac
 [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die 'Port must be between 1 and 65535.'
 case "$repo" in *[!A-Za-z0-9_./-]*|/*|*..*) die 'Invalid release repository';; esac

@@ -166,6 +166,8 @@ func sseHeaders(w http.ResponseWriter) {
 func sendEvent(w http.ResponseWriter, event string, data []byte) error {
 	controller := http.NewResponseController(w)
 	_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	// Bound a stalled write without expiring an otherwise idle HTTP/2 stream.
+	defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 		return err
 	}
@@ -302,13 +304,7 @@ func (a *consoleAPI) action(w http.ResponseWriter, r *http.Request) {
 		case "kill":
 			p.Kill(true)
 		case "restart":
-			p.Stop(true)
-			select {
-			case <-a.ctx.Done():
-				return
-			default:
-				p.Start(false)
-			}
+			p.Restart(a.ctx, false)
 		}
 	}()
 	writeJSON(w, 202, map[string]bool{"accepted": true})

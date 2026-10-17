@@ -508,6 +508,7 @@ type ProcCommEventCapture struct {
 	pid             atomic.Int64
 	eventBuffer     string
 	eventBeginPos   int
+	done            chan struct{}
 }
 
 // NewProcCommEventCapture creates new ProcCommEventCapture object
@@ -517,13 +518,14 @@ func NewProcCommEventCapture(reader io.Reader,
 	procName string,
 	groupName string) *ProcCommEventCapture {
 	pec := &ProcCommEventCapture{reader: reader,
-		captureMaxBytes: captureMaxBytes,
+		captureMaxBytes: min(1<<20, max(1, captureMaxBytes)),
 		stdType:         stdType,
 		procName:        procName,
 		groupName:       groupName,
 
 		eventBuffer:   "",
-		eventBeginPos: -1}
+		eventBeginPos: -1,
+		done:          make(chan struct{})}
 	pec.pid.Store(-1)
 	pec.startCapture()
 	return pec
@@ -536,12 +538,10 @@ func (pec *ProcCommEventCapture) SetPid(pid int) {
 
 func (pec *ProcCommEventCapture) startCapture() {
 	go func() {
+		defer close(pec.done)
 		buf := make([]byte, 10240)
 		for {
 			n, err := pec.reader.Read(buf)
-			if err != nil {
-				break
-			}
 			pec.eventBuffer += string(buf[0:n])
 			for {
 				event := pec.captureEvent()
@@ -550,24 +550,35 @@ func (pec *ProcCommEventCapture) startCapture() {
 				}
 				EmitEvent(event)
 			}
+			if err != nil {
+				return
+			}
 		}
 	}()
 }
 
+// Wait joins the capture worker after its input has been closed.
+func (pec *ProcCommEventCapture) Wait() { <-pec.done }
+
 func (pec *ProcCommEventCapture) captureEvent() Event {
-	pec.findBeginStr()
-	endPos := pec.findEndStr()
-	if endPos == -1 {
-		return nil
+	for {
+		pec.findBeginStr()
+		endPos := pec.findEndStr()
+		if endPos == -1 {
+			return nil
+		}
+		data := pec.eventBuffer[pec.eventBeginPos+len(ProcCommonBeginStr) : endPos]
+		pec.eventBuffer = pec.eventBuffer[endPos+len(ProcCommonEndStr):]
+		pec.eventBeginPos = -1
+		if len(data) > pec.captureMaxBytes {
+			continue
+		}
+		return NewProcCommEvent(pec.stdType,
+			pec.procName,
+			pec.groupName,
+			int(pec.pid.Load()),
+			data)
 	}
-	data := pec.eventBuffer[pec.eventBeginPos+len(ProcCommonBeginStr) : endPos]
-	pec.eventBuffer = pec.eventBuffer[endPos+len(ProcCommonEndStr):]
-	pec.eventBeginPos = -1
-	return NewProcCommEvent(pec.stdType,
-		pec.procName,
-		pec.groupName,
-		int(pec.pid.Load()),
-		data)
 }
 
 func (pec *ProcCommEventCapture) findBeginStr() {
@@ -577,8 +588,11 @@ func (pec *ProcCommEventCapture) findBeginStr() {
 			// remove some string
 			n := len(pec.eventBuffer)
 			if n > len(ProcCommonBeginStr) {
-				pec.eventBuffer = pec.eventBuffer[n-len(ProcCommonBeginStr):]
+				pec.eventBuffer = strings.Clone(pec.eventBuffer[n-len(ProcCommonBeginStr):])
 			}
+		} else if pec.eventBeginPos > 0 {
+			pec.eventBuffer = strings.Clone(pec.eventBuffer[pec.eventBeginPos:])
+			pec.eventBeginPos = 0
 		}
 	}
 }
@@ -587,15 +601,17 @@ func (pec *ProcCommEventCapture) findEndStr() int {
 	if pec.eventBeginPos == -1 {
 		return -1
 	}
-	endPos := strings.Index(pec.eventBuffer, ProcCommonEndStr)
+	start := pec.eventBeginPos + len(ProcCommonBeginStr)
+	endPos := strings.Index(pec.eventBuffer[start:], ProcCommonEndStr)
 	if endPos == -1 {
-		if len(pec.eventBuffer) > pec.captureMaxBytes {
+		if len(pec.eventBuffer)-start > pec.captureMaxBytes+len(ProcCommonEndStr) {
 			log.WithFields(log.Fields{"program": pec.procName}).Warn("The capture buffer is overflow, discard the content")
 			pec.eventBeginPos = -1
 			pec.eventBuffer = ""
 		}
+		return -1
 	}
-	return endPos
+	return start + endPos
 }
 
 // ProcessStateEvent process state event definition

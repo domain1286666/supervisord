@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ochinchina/supervisord/config"
 	"github.com/ochinchina/supervisord/internal/rpcauth"
@@ -213,7 +214,7 @@ func TestHTTP2LogSSEDisconnectAndLegacyPage(t *testing.T) {
 	defer server.Close()
 	client, _ := loginTestClient(t, server)
 	for i := 0; i < 8; i++ {
-		requestCtx, requestCancel := context.WithCancel(t.Context())
+		requestCtx, requestCancel := context.WithTimeout(t.Context(), 25*time.Second)
 		request, _ := http.NewRequestWithContext(requestCtx, "GET", server.URL+"/api/logs/events?name=worker+a%26b&stream=stdout", nil)
 		response, err := client.Do(request)
 		if err != nil {
@@ -229,6 +230,19 @@ func TestHTTP2LogSSEDisconnectAndLegacyPage(t *testing.T) {
 		}
 		if event != "event: log\n" {
 			t.Fatalf("log event=%q", event)
+		}
+		if i == 0 {
+			// Quiet programs must remain connected until the 15-second heartbeat.
+			// A write deadline left armed after Flush resets an idle HTTP/2 stream.
+			for {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					t.Fatalf("quiet HTTP/2 log stream closed before heartbeat: %v", err)
+				}
+				if line == "event: heartbeat\n" {
+					break
+				}
+			}
 		}
 		requestCancel()
 		response.Body.Close()

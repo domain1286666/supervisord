@@ -54,6 +54,24 @@ func TestZeroBackupsAndTimestampRotation(t *testing.T) {
 	}
 }
 
+func TestTimestampRotationLeavesSimilarFilesUntouched(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "output.log")
+	unrelated := name + "X2000-01-01T00-00-00.000000000"
+	if err := os.WriteFile(unrelated, []byte("unrelated"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output := NewFileLogger(name, 1, 0, true, NewNullLogEventEmitter(), NewNullLocker())
+	t.Cleanup(func() { _ = output.Close() })
+	for _, text := range []string{"first", "second"} {
+		if _, err := output.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if data, err := os.ReadFile(unrelated); err != nil || string(data) != "unrelated" {
+		t.Fatalf("rotation changed an unrelated file: %q, %v", data, err)
+	}
+}
+
 func TestMemoryTailUsesAbsoluteByteOffsets(t *testing.T) {
 	l := NewMemoryLogger(1, NewNullLogEventEmitter())
 	_, _ = l.Write([]byte("first\n"))

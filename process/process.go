@@ -2,6 +2,7 @@ package process
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -274,7 +275,11 @@ type Process struct {
 	livenessChecker *LivenessChecker
 	runDone         chan struct{}
 	stopCh          chan struct{}
-	stopSent        bool
+	startCancel     context.CancelFunc
+	childDone       chan struct{}
+	stopContext     context.Context
+	stopForce       context.CancelFunc
+	stopWorkerDone  chan struct{}
 	lastExitCode    int
 	closed          atomic.Bool
 	cronID          cron.EntryID
@@ -283,6 +288,7 @@ type Process struct {
 	stdoutPath      string
 	stderrPath      string
 	runGeneration   atomic.Uint64
+	controlEpoch    uint64 // guarded by lock; newer user commands cancel pending restarts
 	stdinBusy       chan struct{}
 }
 
@@ -335,6 +341,9 @@ func (p *Process) DoLivenessCheck() {
 		return
 	}
 	generation := p.runGeneration.Load()
+	p.lock.RLock()
+	epoch := p.controlEpoch
+	p.lock.RUnlock()
 	current := func() bool {
 		return !p.closed.Load() && !p.stopByUser.Load() && p.GetState() == Running && p.runGeneration.Load() == generation
 	}
@@ -354,10 +363,7 @@ func (p *Process) DoLivenessCheck() {
 		}
 		switch strings.ToLower(action) {
 		case "restart":
-			p.Stop(true)
-			if !p.closed.Load() {
-				p.Start(false)
-			}
+			p.restart(p.livenessChecker.scriptExecutor.ctx, false, &epoch)
 		case "stop":
 			p.Stop(true)
 		default:
@@ -474,36 +480,43 @@ func (p *Process) GetPriority() int {
 	return p.config.GetInt("priority", 999)
 }
 
-func (p *Process) executePreStartHook() {
+func (p *Process) executePreStartHook(ctx context.Context) {
 	hook := p.config.GetString("pre_start_hook", "")
 	if hook != "" {
 		log.WithField("program", p.GetName()).Info("execute pre_start_hook")
-		p.executeHook(hook)
+		p.executeHook(ctx, hook)
 	}
 
 }
 
-func (p *Process) executePreStopHook() {
+func (p *Process) executePreStopHook(ctx context.Context) {
 	hook := p.config.GetString("pre_stop_hook", "")
 	if hook != "" {
 		log.WithField("program", p.GetName()).Info("execute pre_stop_hook")
-		p.executeHook(hook)
+		p.executeHook(ctx, hook)
 	}
 }
 
-func (p *Process) executeHook(cmd string) {
+func (p *Process) executeHook(ctx context.Context, cmd string) {
 	if cmd == "" {
 		return
 	}
 
-	scriptExecutor := NewScriptExecutorWithTimeout(cmd, uint32(min(60, max(1, p.config.GetInt("hook_timeout", 10)))))
+	scriptExecutor := NewScriptExecutorWithContext(ctx, cmd, uint32(p.hookTimeout()))
 	defer scriptExecutor.Close()
 	err := scriptExecutor.Execute()
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		log.WithError(err).WithField("program", p.GetName()).Error("fail to execute hook")
 	} else {
 		log.WithField("program", p.GetName()).Info("success to execute hook")
 	}
+}
+
+func (p *Process) hookTimeout() int {
+	return min(60, max(1, p.config.GetInt("hook_timeout", 10)))
 }
 
 // SendProcessStdin sends data to process stdin
@@ -704,9 +717,11 @@ func (p *Process) setProgramRestartChangeMonitor(programPath string) {
 			_ = p.Signal(signal, true)
 			return
 		}
-		p.Stop(true)
-		if !p.closed.Load() {
-			p.Start(false)
+		p.lock.RLock()
+		epoch, running := p.controlEpoch, p.IsRunning() && !p.stopByUser.Load()
+		p.lock.RUnlock()
+		if running {
+			p.restart(context.Background(), false, &epoch)
 		}
 	})
 }

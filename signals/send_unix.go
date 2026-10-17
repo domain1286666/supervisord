@@ -17,9 +17,9 @@ func Send(process *os.Process, name string, children bool) error {
 	if err != nil {
 		return err
 	}
-	pid := process.Pid
-	if children {
-		pid = -pid
+	if !children {
+		// os.Process tracks a waited child (and uses pidfds where available).
+		return process.Signal(sig)
 	}
-	return syscall.Kill(pid, sig.(syscall.Signal))
+	return syscall.Kill(-process.Pid, sig.(syscall.Signal))
 }

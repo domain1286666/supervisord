@@ -244,6 +244,15 @@ try {
     windowsHide: true
   })
   assert.match(reloadedStatus, /\bstopped\b/i, 'changed-only reload must preserve a manual stop')
+  await context.route('**/api/auth/logout', (request) => request.abort('internetdisconnected'))
+  await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  await page.getByText('退出登录失败，请恢复连接后重试。', { exact: true }).waitFor()
+  assert.equal(
+    await page.locator('.console-shell').count(),
+    1,
+    'a failed logout must not present the still-valid session as signed out'
+  )
+  await context.unroute('**/api/auth/logout')
   await page.getByRole('button', { name: '退出登录', exact: true }).click()
   await page.getByRole('button', { name: '安全登录', exact: true }).waitFor()
   assert.equal(await page.evaluate(() => activeSSECount()), 0, 'logout must release every stream')
@@ -265,6 +274,7 @@ try {
           'network recovery',
           'batch stop',
           'reload session cleanup and manual stop',
+          'failed logout preserves visible session',
           'logout'
         ],
         screenshots: output

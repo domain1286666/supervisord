@@ -45,10 +45,10 @@ jobs:
       - name: Verify local binary installer and idempotent initialization
         if: runner.os == 'Linux'
         run: |
-          sudo sh install.sh --binary .local/supervisord
+          sudo sh install.sh --binary .local/supervisord --bind 127.0.0.1 > "$RUNNER_TEMP/install-first.log"
           sudo systemctl is-active --quiet go-supervisord.service
           before=$(sudo sha256sum /etc/supervisord/supervisord.conf)
-          sudo sh install.sh --binary .local/supervisord
+          sudo sh install.sh --binary .local/supervisord --bind 127.0.0.1 > "$RUNNER_TEMP/install-repeat.log"
           after=$(sudo sha256sum /etc/supervisord/supervisord.conf)
           test "$before" = "$after"
           sudo systemctl stop go-supervisord.service

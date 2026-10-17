@@ -161,7 +161,7 @@ func (l *FileLogger) isTimestampedFileName(fileName string) bool {
 		return false
 	}
 	baseName := filepath.Base(l.name)
-	if !strings.HasPrefix(fileName, baseName) || fileName == baseName || len(fileName) <= len(baseName)+1 {
+	if !strings.HasPrefix(fileName, baseName+".") {
 		return false
 	}
 
@@ -361,6 +361,7 @@ func (l *LogCaptureLogger) Write(p []byte) (int, error) {
 // Close LogCaptureLogger
 func (l *LogCaptureLogger) Close() error {
 	_ = l.procCommEventCapWriter.Close()
+	l.procCommEventCapture.Wait()
 	return l.underlineLogger.Close()
 }
 

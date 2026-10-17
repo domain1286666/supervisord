@@ -69,6 +69,6 @@ remote_1_ca_file = %(here)s/node-b-certificate.pem
 
 本地安装：`sudo sh install.sh --binary ./supervisord`。重复执行保留已有配置和凭据；`--no-start` 安装并启用服务但不启动。自定义监听地址、端口只影响新配置。
 
-下载方式依赖本改造版本已发布到指定仓库，脚本只从 HTTPS 获取文件并检查 `checksums.txt`。没有发布 Release 前请使用本地二进制方式。
+默认下载仓库为公开的 [`domain1286666/supervisord`](https://github.com/domain1286666/supervisord)，无需 GitHub 登录或令牌。脚本通过 HTTPS 获取 Release 二进制与 `checksums.txt`，校验成功后才执行；`--version v0.8.0` 固定版本，`--repo OWNER/REPO` 可指向自行发布的兼容仓库。完整公网安装命令见 [README](../README.md#安装与启动)。
 
 回退旧版本时停止新服务，恢复备份二进制和对应旧 conf。旧程序不理解新的会话/TLS 设置，直接复用新 conf 不能保证兼容。不要在仍使用新版本时恢复明文网络管理入口。

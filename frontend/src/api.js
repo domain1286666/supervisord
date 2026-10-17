@@ -4,10 +4,11 @@ export function setCSRF(value) {
 }
 
 export async function api(path, { method = 'GET', body, signal } = {}) {
+  const timeout = AbortSignal.timeout(20000)
   const response = await fetch(`/api${path}`, {
     method,
     credentials: 'same-origin',
-    signal,
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     headers: {
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...(method === 'GET' ? {} : { 'X-CSRF-Token': csrf })

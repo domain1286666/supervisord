@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,32 +19,53 @@ import (
 
 // Start owns one restart loop. A closed ready channel cannot lose a wakeup.
 func (p *Process) Start(wait bool) {
+	p.start(wait, nil)
+}
+
+func (p *Process) start(wait bool, expected *uint64) {
 	p.lock.Lock()
-	if p.inStart || p.closed.Load() {
+	if p.inStart || p.closed.Load() || (expected != nil && p.controlEpoch != *expected) {
 		p.lock.Unlock()
 		return
 	}
+	p.controlEpoch++
 	p.inStart = true
 	p.cmd = nil
 	p.retryTimes.Store(1)
 	p.changeStateTo(Starting)
-	p.stopSent = false
+	p.childDone = nil
+	p.stopWorkerDone = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	p.startCancel = cancel
 	p.stopByUser.Store(false)
 	p.runDone = make(chan struct{})
 	p.stopCh = make(chan struct{})
 	ready := make(chan struct{})
 	p.lock.Unlock()
-	go p.runLoop(ready)
+	go p.runLoop(ctx, ready)
 	if wait {
 		<-ready
 	}
 }
 
-func (p *Process) runLoop(ready chan struct{}) {
+func (p *Process) runLoop(ctx context.Context, ready chan struct{}) {
 	var readyOnce sync.Once
 	announce := func() { readyOnce.Do(func() { close(ready) }) }
 	defer announce()
-	defer func() { p.lock.Lock(); p.inStart = false; close(p.runDone); p.lock.Unlock() }()
+	defer func() {
+		p.lock.Lock()
+		p.childDone = nil // Prevent late Stop calls from creating another worker.
+		workerDone := p.stopWorkerDone
+		p.startCancel()
+		p.lock.Unlock()
+		if workerDone != nil {
+			<-workerDone
+		}
+		p.lock.Lock()
+		p.inStart = false
+		close(p.runDone)
+		p.lock.Unlock()
+	}()
 	failures := 0
 	for !p.stopByUser.Load() && !p.closed.Load() {
 		p.lock.Lock()
@@ -54,7 +76,7 @@ func (p *Process) runLoop(ready chan struct{}) {
 		cmd := p.cmd
 		p.lock.Unlock()
 		if err == nil {
-			p.executePreStartHook()
+			p.executePreStartHook(ctx)
 		}
 		p.lock.Lock()
 		if p.stopByUser.Load() || p.closed.Load() {
@@ -89,6 +111,10 @@ func (p *Process) runLoop(ready chan struct{}) {
 			continue
 		}
 		p.runGeneration.Add(1)
+		childDone := make(chan struct{})
+		p.childDone = childDone
+		stopContext, stopForce := context.WithCancel(context.Background())
+		p.stopContext, p.stopForce = stopContext, stopForce
 		if p.livenessChecker != nil {
 			p.livenessChecker.Reset()
 		}
@@ -107,7 +133,12 @@ func (p *Process) runLoop(ready chan struct{}) {
 			announce()
 		}
 		exited := make(chan error, 1)
-		go func() { exited <- WaitCommand(cmd) }()
+		go func() {
+			err := WaitCommand(cmd)
+			close(childDone)
+			stopForce() // Cancel an in-flight hook as soon as this child exits.
+			exited <- err
+		}()
 		timer := time.NewTimer(time.Duration(max(0, p.getStartSeconds())) * time.Second)
 		ran := initiallyRunning
 		select {
@@ -196,72 +227,63 @@ func (p *Process) closeStdinLocked() {
 }
 
 // Stop requests graceful shutdown, then escalates after stopwaitsecs.
-func (p *Process) Stop(wait bool) { p.stop(false, wait) }
+func (p *Process) Stop(wait bool) { p.stop(false, wait, nil) }
 
 // Kill immediately terminates the process and suppresses automatic restart.
-func (p *Process) Kill(wait bool) { p.stop(true, wait) }
+func (p *Process) Kill(wait bool) { p.stop(true, wait, nil) }
 
-func (p *Process) stop(force, wait bool) {
-	p.lock.Lock()
-	if p.stopByUser == nil {
-		p.lock.Unlock()
+// Restart starts a replacement only if no newer control request supersedes it.
+func (p *Process) Restart(ctx context.Context, wait bool) {
+	p.restart(ctx, wait, nil)
+}
+
+func (p *Process) restart(ctx context.Context, wait bool, expected *uint64) {
+	if ctx.Err() != nil {
 		return
 	}
+	epoch, accepted := p.stop(false, true, expected)
+	if accepted && ctx.Err() == nil {
+		p.start(wait, &epoch)
+	}
+}
+
+func (p *Process) stop(force, wait bool, expected *uint64) (uint64, bool) {
+	p.lock.Lock()
+	if p.stopByUser == nil || (expected != nil && p.controlEpoch != *expected) {
+		p.lock.Unlock()
+		return 0, false
+	}
+	p.controlEpoch++
+	epoch := p.controlEpoch
 	if !p.stopByUser.Swap(true) && p.stopCh != nil {
 		close(p.stopCh)
+	}
+	if p.startCancel != nil {
+		p.startCancel()
 	}
 	done := p.runDone
 	active := p.inStart
 	var child *os.Process
-	if p.cmd != nil && p.IsRunning() {
+	if p.cmd != nil && p.childDone != nil && p.IsRunning() {
 		child = p.cmd.Process
 	}
-	send := !p.stopSent || force
-	p.stopSent = true
+	if force && p.stopForce != nil {
+		p.stopForce()
+	}
 	if active && child != nil && p.IsRunning() {
 		p.changeStateTo(Stopping)
+		if p.stopWorkerDone == nil {
+			p.stopWorkerDone = make(chan struct{})
+			go p.stopChild(child, p.childDone, p.stopContext, p.stopWorkerDone)
+		}
 	}
 	p.lock.Unlock()
 	if !active {
-		return
-	}
-	if child != nil && send {
-		go func() {
-			if !force {
-				p.executePreStopHook()
-			}
-			sigs := strings.Fields(p.config.GetString("stopsignal", "TERM"))
-			if force {
-				sigs = []string{"KILL"}
-			}
-			stopGroup := p.config.GetBool("stopasgroup", false)
-			killGroup := p.config.GetBool("killasgroup", stopGroup)
-			for _, sig := range sigs {
-				children := stopGroup
-				if force {
-					children = killGroup
-				}
-				if err := signals.Send(child, sig, children); err != nil {
-					log.WithError(err).WithField("program", p.GetName()).Debug("send stop signal")
-				}
-				if force {
-					return
-				}
-				timer := time.NewTimer(time.Duration(max(0, p.config.GetInt("stopwaitsecs", 10))) * time.Second)
-				select {
-				case <-done:
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-			}
-			if err := signals.Send(child, "KILL", killGroup); err != nil {
-				log.WithError(err).Warn("force stop failed")
-			}
-		}()
+		return epoch, true
 	}
 	if wait {
-		budget := max(0, p.config.GetInt("stopwaitsecs", 10))*max(1, len(strings.Fields(p.config.GetString("stopsignal", "TERM")))) + 10
+		signalsCount := len(strings.Fields(p.config.GetString("stopsignal", "TERM")))
+		budget := p.hookTimeout() + (max(0, p.config.GetInt("stopwaitsecs", 10))+5)*signalsCount + 10
 		timer := time.NewTimer(time.Duration(budget) * time.Second)
 		defer timer.Stop()
 		select {
@@ -270,6 +292,44 @@ func (p *Process) stop(force, wait bool) {
 			log.WithField("program", p.GetName()).Error("stop exceeded deadline")
 		}
 	}
+	return epoch, true
+}
+
+// stopChild owns the complete stop sequence for one child. Force requests cancel
+// the hook and interrupt graceful waits; the restart loop joins this worker.
+func (p *Process) stopChild(child *os.Process, childDone <-chan struct{}, force context.Context, workerDone chan struct{}) {
+	defer close(workerDone)
+	if force.Err() == nil {
+		p.executePreStopHook(force)
+	}
+	stopGroup := p.config.GetBool("stopasgroup", false)
+	killGroup := p.config.GetBool("killasgroup", stopGroup)
+	send := func(name string, group bool) {
+		select {
+		case <-childDone:
+			return
+		default:
+		}
+		if err := signals.Send(child, name, group); err != nil {
+			log.WithError(err).WithField("program", p.GetName()).Debug("send stop signal")
+		}
+	}
+	for _, sig := range strings.Fields(p.config.GetString("stopsignal", "TERM")) {
+		if force.Err() != nil {
+			break
+		}
+		send(sig, stopGroup)
+		timer := time.NewTimer(time.Duration(max(0, p.config.GetInt("stopwaitsecs", 10))) * time.Second)
+		select {
+		case <-childDone:
+			timer.Stop()
+			return
+		case <-force.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+	send("KILL", killGroup)
 }
 
 // Close releases cron registration, file watches and log descriptors.

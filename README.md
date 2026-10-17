@@ -6,15 +6,15 @@ Go 编写的进程管理器。一个可执行文件和一个 INI/conf 配置即�
 
 ## 安装与启动
 
-使用本版本的 Linux 二进制与 `install.sh`，在 systemd 主机执行：
+在 Linux/systemd 主机执行（公开 GitHub Release，无需 GitHub 账号或令牌）：
 
 ```sh
-sudo sh install.sh --binary ./supervisord
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL https://github.com/domain1286666/supervisord/releases/latest/download/install.sh -o install.sh && sudo sh install.sh
 ```
 
 脚本安装到 `/usr/local/bin/supervisord`，生成 `/etc/supervisord/supervisord.conf`，启用并启动 `go-supervisord.service`。终端只在首次生成时显示随机账号和密码，请立即保存。访问 `https://服务器IP:8002`，核对输出的证书 SHA-256 指纹后信任自签名证书。重复安装保留配置、密码和证书。
 
-发布对应 Release 后，也可用 `sudo sh install.sh --repo OWNER/REPO --version vX.Y.Z` 下载并校验架构对应二进制。替换为实际发布仓库和标签；旧版上游 Release 不包含本次安全改造。支持 Linux amd64、arm64、armv7。脚本不会修改防火墙规则。
+安装脚本默认从[公开仓库](https://github.com/domain1286666/supervisord)的 [Release](https://github.com/domain1286666/supervisord/releases/latest) 下载对应架构的二进制，并验证 `checksums.txt`。支持 Linux amd64、arm64、armv7。用 `--version v0.8.0` 固定版本；已有本地文件时用 `sudo sh install.sh --binary ./supervisord_linux_amd64`。脚本不会修改防火墙规则。
 
 直接运行，或在 Windows 使用 `supervisord.exe`：
 
@@ -100,6 +100,7 @@ Go 使用 gofmt；Vue/JS/CSS 使用固定版本 Prettier，`npm run format` 格�
 - [旧版本迁移、远程 CLI 与证书](docs/MIGRATION.md)
 - [架构、页面和接口约定](docs/ARCHITECTURE.md)
 - [代码审计、测量数据和验证边界](docs/CODE_AUDIT.md)
+- [重构后的第二轮审查与修复](docs/REVIEW_2026-10-18.md)
 - [贡献规范](AGENTS.md)
 
 MIT License，见 [LICENSE](LICENSE)。

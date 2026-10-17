@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -649,8 +650,7 @@ func (s *Supervisor) Reload(action ReloadAction) (reloadErr error) {
 				created[program] = true
 			} else if action == RestartAll && proc.IsRunning() {
 				log.WithFields(log.Fields{"program": program}).Info("the program will be restarted")
-				proc.Stop(true)
-				proc.Start(true)
+				proc.Restart(context.Background(), true)
 			}
 		}
 	}

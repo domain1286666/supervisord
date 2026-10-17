@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import {
   Odometer,
   Monitor,
@@ -65,8 +66,9 @@ function login(value) {
 async function logout() {
   try {
     await api('/auth/logout', { method: 'POST' })
-  } finally {
     clearSession()
+  } catch (error) {
+    if (error.status !== 401) ElMessage.error('退出登录失败，请恢复连接后重试。')
   }
 }
 function rememberTab() {

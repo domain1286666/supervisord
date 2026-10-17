@@ -1,8 +1,11 @@
 package process
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -153,6 +156,106 @@ func TestImmediateKillSuppressesRestart(t *testing.T) {
 	waitProcess(t, p)
 	if p.GetState() != Stopped || p.GetPid() != 0 {
 		t.Fatalf("state=%v pid=%d", p.GetState(), p.GetPid())
+	}
+}
+
+func TestKillCancelsPreStopHookBeforeRestart(t *testing.T) {
+	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-r.Context().Done():
+			close(cancelled)
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	p := fixtureProcess(t, "ignore", "pre_stop_hook="+server.URL+"\nhook_timeout=60\n")
+	p.Start(true)
+	p.Stop(false)
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("pre-stop hook did not start")
+	}
+	p.Kill(true)
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("force kill left the old pre-stop hook running")
+	}
+	if p.GetState() != Stopped {
+		t.Fatalf("after force kill: state=%v", p.GetState())
+	}
+	p.Start(true)
+	if p.GetPid() == 0 {
+		t.Fatal("restart did not create a new child after joining the stop worker")
+	}
+	p.Kill(true)
+}
+
+func TestStopCancelsPreStartHook(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	p := fixtureProcess(t, "ignore", "pre_start_hook="+server.URL+"\nhook_timeout=60\n")
+	p.Start(false)
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("pre-start hook did not start")
+	}
+	done := make(chan struct{})
+	go func() { p.Stop(true); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop did not cancel the blocked pre-start hook")
+	}
+	if p.GetPid() != 0 || p.GetState() != Stopped {
+		t.Fatalf("cancelled start: pid=%d state=%v", p.GetPid(), p.GetState())
+	}
+}
+
+func TestKillSupersedesPendingRestart(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	p := fixtureProcess(t, "ignore", "pre_stop_hook="+server.URL+"\nhook_timeout=60\n")
+	p.Start(true)
+	done := make(chan struct{})
+	go func() { p.Restart(context.Background(), false); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("restart did not enter its pre-stop hook")
+	}
+	p.Kill(true)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("superseded restart did not finish")
+	}
+	p.lock.RLock()
+	active := p.inStart
+	p.lock.RUnlock()
+	if active || p.GetState() != Stopped {
+		t.Fatalf("force kill was undone by the pending restart: active=%v state=%v", active, p.GetState())
 	}
 }
 

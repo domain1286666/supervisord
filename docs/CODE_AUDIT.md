@@ -1,6 +1,6 @@
 # 代码审计与验证记录
 
-日期：2026-10-18。审查对象为本工作区的一方手写 Go、Vue/JS、安装与构建代码；检查配置解析、资源创建/使用/关闭、锁顺序和错误分支，并阅读相关回归测试。Go 文件范围为 98 个（含测试及平台适配）；第三方依赖和压缩构建产物采用版本/漏洞检查，不把逐行阅读第三方库作为已完成事项。
+日期：2026-10-18。审查对象为本工作区的一方手写 Go、Vue/JS、安装与构建代码；检查配置解析、资源创建/使用/关闭、锁顺序和错误分支，并阅读相关回归测试。Go 文件范围为 99 个（含测试及平台适配）；第三方依赖和压缩构建产物采用版本/漏洞检查，不把逐行阅读第三方库作为已完成事项。重构后的再次审查及新增修复见 [REVIEW_2026-10-18.md](REVIEW_2026-10-18.md)。
 
 ## 文件范围与检查入口
 
@@ -79,11 +79,11 @@ go test ./process -run '^$' -bench BenchmarkManager -benchmem -count=3
 
 本机已执行：Go 两模块完整测试与 vet、Windows/Linux 条件下 golangci-lint 2.15.0（govet/ineffassign/staticcheck/unused，0 issues）、前端 3 项状态测试、Prettier 检查与生产构建、npm audit（全部依赖 0 个漏洞）、实际 Chromium 端到端检查、安装脚本 `sh -n`/`--help`、Linux amd64 测试交叉编译、Windows 与 Linux amd64/arm64/armv7、FreeBSD amd64 构建。
 
-浏览器覆盖 13 项：登录、概览、进程管理、日志、5 轮标签切换的连接释放、旧日志链接、390px 移动布局、本地签名 CLI、错误当前密码/密码修改、断网恢复、批量停止、重载会话清理并保留手动停止、退出。活动日志页精确持有 2 条 SSE，退出日志页回落到 1，退出登录回落到 0。Windows 沙箱会阻止 taskkill，已通过最小复现确认；批量停止流程在正常系统进程权限下重跑通过。截图来自测试 fixture，不含实际管理密码。
+浏览器覆盖 14 项：登录、概览、进程管理、日志、5 轮标签切换的连接释放、旧日志链接、390px 移动布局、本地签名 CLI、错误当前密码/密码修改、断网恢复、批量停止、重载会话清理并保留手动停止、退出失败保留可见会话、正常退出。活动日志页精确持有 2 条 SSE，退出日志页回落到 1，退出登录回落到 0。Windows 沙箱会阻止 taskkill，已通过最小复现确认；批量停止流程在正常系统进程权限下重跑通过。截图来自测试 fixture，不含实际管理密码。
 
 安全扫描使用 Go 官方 govulncheck，Windows 与 Linux 目标均为 **0 个可达漏洞**。初次 Go 1.27.0 扫描发现标准库 HTTP/2/TLS 等已修复漏洞，因此最低构建补丁升级到 1.27.2；见 [Go 漏洞记录](https://pkg.go.dev/vuln/GO-2026-6617)。模块级仍报告 [x/crypto OpenPGP 未维护](https://pkg.go.dev/vuln/GO-2026-5932)，本项目只用 bcrypt，不导入或调用该包。
 
-**未在本机完成**：Linux 实机进程组信号/race/systemd 安装运行、Docker 镜像运行、长期生产负载浸泡。Windows 本机 `go test -race` 返回 requires cgo，未据此声明 race 通过；Linux CI 已配置 race、浏览器和实际本地二进制安装/重复安装检查，但本次未执行远端工作流。交叉编译不能替代这些运行验证。
+**未在本机完成**：Linux 实机进程组信号/race/systemd 安装运行、Docker 镜像运行、长期生产负载浸泡。Windows 本机 `go test -race` 返回 requires cgo，未据此声明 race 通过；Linux CI 包含 race、浏览器和实际本地二进制安装/重复安装检查，实际远端执行结果见[对应提交的公开工作流](https://github.com/domain1286666/supervisord/actions)。交叉编译不能替代这些运行验证。
 
 ## 运行中仍需关注
 

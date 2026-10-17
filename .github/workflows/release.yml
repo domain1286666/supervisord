@@ -38,3 +38,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes
+      - name: Verify anonymous public release installation
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --retry 5 --retry-all-errors --max-time 90 "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/install.sh" -o "$RUNNER_TEMP/public-install.sh"
+          cmp install.sh "$RUNNER_TEMP/public-install.sh"
+          sudo env SUPERVISORD_VERSION="$RELEASE_TAG" sh "$RUNNER_TEMP/public-install.sh" --bind 127.0.0.1 > "$RUNNER_TEMP/public-install.log"
+          sudo systemctl is-active --quiet go-supervisord.service
+          sudo systemctl stop go-supervisord.service
