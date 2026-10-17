@@ -259,6 +259,23 @@ func TestKillSupersedesPendingRestart(t *testing.T) {
 	}
 }
 
+func TestStaleHealthControlKeepsReplacementRunning(t *testing.T) {
+	p := fixtureProcess(t, "ignore", "")
+	p.Start(true)
+	p.lock.RLock()
+	epoch := p.controlEpoch
+	p.lock.RUnlock()
+	p.Kill(true)
+	p.Start(true)
+	pid := p.GetPid()
+	p.stop(false, true, &epoch)
+	p.restart(context.Background(), false, &epoch)
+	if p.GetPid() != pid || p.GetState() != Running {
+		t.Fatalf("stale health control affected the replacement: pid=%d want=%d state=%v", p.GetPid(), pid, p.GetState())
+	}
+	p.Kill(true)
+}
+
 func TestGracefulStop(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX TERM semantics; Windows uses taskkill")

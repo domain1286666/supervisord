@@ -365,7 +365,7 @@ func (p *Process) DoLivenessCheck() {
 		case "restart":
 			p.restart(p.livenessChecker.scriptExecutor.ctx, false, &epoch)
 		case "stop":
-			p.Stop(true)
+			p.stop(false, true, &epoch)
 		default:
 			execute(action)
 		}
