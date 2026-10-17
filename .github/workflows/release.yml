@@ -1,0 +1,40 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.2'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm test && npm run build
+        working-directory: frontend
+      - run: go test -race ./... ./xmlrpcclient/...
+      - name: Build self-contained Linux binaries
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          GOARCH=amd64 go build -trimpath -tags release -ldflags="-s -w -X main.version=$RELEASE_TAG -X main.commit=$GITHUB_SHA" -o dist/supervisord_linux_amd64 .
+          GOARCH=arm64 go build -trimpath -tags release -ldflags="-s -w -X main.version=$RELEASE_TAG -X main.commit=$GITHUB_SHA" -o dist/supervisord_linux_arm64 .
+          GOARCH=arm GOARM=7 go build -trimpath -tags release -ldflags="-s -w -X main.version=$RELEASE_TAG -X main.commit=$GITHUB_SHA" -o dist/supervisord_linux_armv7 .
+          cp install.sh dist/
+          cd dist
+          sha256sum supervisord_linux_* install.sh > checksums.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes

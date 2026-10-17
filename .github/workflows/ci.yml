@@ -1,0 +1,54 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.2'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run format:check
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: go test ./... ./xmlrpcclient/...
+      - run: go vet ./... ./xmlrpcclient/...
+      - run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./... ./xmlrpcclient/...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./... ./xmlrpcclient/...
+      - run: go test -race ./... ./xmlrpcclient/...
+        if: runner.os == 'Linux'
+      - run: sh -n install.sh
+        if: runner.os == 'Linux'
+      - run: go build -tags release -o .local/supervisord .
+        if: runner.os == 'Linux'
+      - run: go build -tags release -o .local/supervisord.exe .
+        if: runner.os == 'Windows'
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+      - name: Verify local binary installer and idempotent initialization
+        if: runner.os == 'Linux'
+        run: |
+          sudo sh install.sh --binary .local/supervisord
+          sudo systemctl is-active --quiet go-supervisord.service
+          before=$(sudo sha256sum /etc/supervisord/supervisord.conf)
+          sudo sh install.sh --binary .local/supervisord
+          after=$(sudo sha256sum /etc/supervisord/supervisord.conf)
+          test "$before" = "$after"
+          sudo systemctl stop go-supervisord.service
